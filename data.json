@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-13T03:12:01.545962+00:00",
+  "updated_at": "2026-09-14T03:25:03.935179+00:00",
   "products": [
     {
       "product": "PowerDirector",
@@ -15,7 +15,7 @@
       "build_date": "2026-09-08",
       "last_modified": "Tue, 08 Sep 2026 04:49:11 GMT",
       "md5": "606205d30e8f17fd002b161688a36f58",
-      "fetched_at": "2026-09-13T03:11:52.531304+00:00"
+      "fetched_at": "2026-09-14T03:24:55.442077+00:00"
     },
     {
       "product": "PhotoDirector",
@@ -31,7 +31,7 @@
       "build_date": "2026-09-08",
       "last_modified": "Tue, 08 Sep 2026 04:59:31 GMT",
       "md5": "02769dcdca897ea1574c2de844c4d76e",
-      "fetched_at": "2026-09-13T03:12:01.452701+00:00"
+      "fetched_at": "2026-09-14T03:25:03.841411+00:00"
     }
   ]
 }
