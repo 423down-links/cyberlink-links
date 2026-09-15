@@ -32,8 +32,9 @@ PRODUCTS = {
     'powerdirector': {
         'name': 'PowerDirector',
         'product_id': '407',
-        'api_params': 'PRODUCTNAME=PowerDirector&PRODUCTVERSION=24.0&VERSIONTYPE=1&sid=ffe03f96&CDKey=CLBiosSC&VID=4.1.1.14809&LANGUAGE=ENU&ostype=Windows',
+        'api_params': 'PRODUCTNAME=PowerDirector&PRODUCTVERSION=24.0&VERSIONTYPE=1&sid=ffe03f96&CDKey=CLBiosSC&VID=4.2.1.14316&LANGUAGE=ENU&ostype=Windows',
         'main_exe': 'PowerDirector_365.exe',
+        'default_version': '24.0',
     },
     'photodirector': {
         'name': 'PhotoDirector',
@@ -59,7 +60,8 @@ DATA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data.json'
 
 def get_seven_zip():
     """检测或安装 7z 工具"""
-    for cmd in ['7z', '7za', '7zz', '/usr/bin/7z', '/usr/local/bin/7z']:
+    for cmd in ['7z', '7za', '7zz', '/usr/bin/7z', '/usr/local/bin/7z',
+                 '/home/user/Doubao/chats/38440390544390658/softofficelink/tools/7zz']:
         try:
             r = subprocess.run([cmd, '--help'], capture_output=True, timeout=5)
             if r.returncode == 0:
@@ -313,10 +315,12 @@ def fetch_product(product_key, seven_zip, work_dir, get_version=True):
     if get_version:
         print(f"\n[4/4] 自动识别版本号...")
         version_info = extract_version(best['link'], cfg['main_exe'], seven_zip, work_dir)
+    # 版本号提取失败时使用配置的默认版本号
+    version = version_info.get('FileVersion', '') or cfg.get('default_version', '')
     result = {
         'product': cfg['name'],
         'product_key': product_key,
-        'version': version_info.get('FileVersion', ''),
+        'version': version,
         'product_name': version_info.get('ProductName', cfg['name']),
         'link': best['link'],
         'token': best['token'],
