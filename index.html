@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberLink Offline Installer Link Fetcher</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 {
+    text-align: center;
+    font-size: 1.6em;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #e94560, #0f3460);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .subtitle {
+    text-align: center;
+    color: #888;
+    font-size: 0.85em;
+    margin-bottom: 24px;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 640px) {
+    .cards { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: #16213e;
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #0f3460;
+    transition: border-color 0.3s;
+  }
+  .card:hover { border-color: #e94560; }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 1.2em;
+    font-weight: 600;
+    color: #fff;
+  }
+  .badge {
+    font-size: 0.7em;
+    padding: 3px 8px;
+    border-radius: 10px;
+    background: #0f3460;
+    color: #4ecca3;
+  }
+  .badge.loading { background: #533483; color: #ffd369; }
+  .field { margin-bottom: 12px; }
+  .field-label {
+    font-size: 0.75em;
+    color: #888;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .field-value {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8em;
+    background: #0f0f23;
+    padding: 8px 10px;
+    border-radius: 6px;
+    word-break: break-all;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .field-value a {
+    color: #4ecca3;
+    text-decoration: none;
+    flex: 1;
+  }
+  .field-value a:hover { text-decoration: underline; }
+  .copy-btn {
+    background: none;
+    border: 1px solid #0f3460;
+    color: #888;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    flex-shrink: 0;
+    transition: all 0.2s;
+  }
+  .copy-btn:hover {
+    border-color: #e94560;
+    color: #e94560;
+  }
+  .copy-btn.copied {
+    border-color: #4ecca3;
+    color: #4ecca3;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 24px;
+    font-size: 0.75em;
+    color: #555;
+  }
+  .footer a {
+    color: #4ecca3;
+    text-decoration: none;
+  }
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0f3460;
+    color: #4ecca3;
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>CyberLink Offline Installer Link Fetcher</h1>
+  <p class="subtitle">PowerDirector / PhotoDirector Latest Offline Installer Download Links</p>
+
+  <div class="cards">
+    <div class="card" id="card-pd">
+      <div class="card-header">
+        <span class="card-title">PowerDirector</span>
+        <span class="badge" id="badge-pd">Auto-Update</span>
+      </div>
+      <div class="field">
+        <div class="field-label">Offline Installer URL</div>
+        <div class="field-value">
+          <a href="#" target="_blank" id="link-pd">-</a>
+          <button class="copy-btn" onclick="copyText('link-pd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">MD5</div>
+        <div class="field-value">
+          <span id="md5-pd">-</span>
+          <button class="copy-btn" onclick="copyText('md5-pd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Token</div>
+        <div class="field-value">
+          <span id="token-pd">-</span>
+          <button class="copy-btn" onclick="copyText('token-pd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Size / Version / Build Date</div>
+        <div class="field-value">
+          <span id="meta-pd">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-phd">
+      <div class="card-header">
+        <span class="card-title">PhotoDirector</span>
+        <span class="badge" id="badge-phd">Auto-Update</span>
+      </div>
+      <div class="field">
+        <div class="field-label">Offline Installer URL</div>
+        <div class="field-value">
+          <a href="#" target="_blank" id="link-phd">-</a>
+          <button class="copy-btn" onclick="copyText('link-phd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">MD5</div>
+        <div class="field-value">
+          <span id="md5-phd">-</span>
+          <button class="copy-btn" onclick="copyText('md5-phd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Token</div>
+        <div class="field-value">
+          <span id="token-phd">-</span>
+          <button class="copy-btn" onclick="copyText('token-phd', this)">Copy</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Size / Version / Build Date</div>
+        <div class="field-value">
+          <span id="meta-phd">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer" id="footer">
+    <a href="https://www.423down.com" target="_blank">423down.com</a>
+  </p>
+</div>
+
+<div class="toast" id="toast">Copied to clipboard</div>
+
+<script>
+var EMBEDDED_DATA = {
+  "updated_at": "2026-09-10T23:30:00",
+  "products": [
+    {
+      "product": "PowerDirector",
+      "product_key": "powerdirector",
+      "version": "25.0.0904.0",
+      "link": "https://build.cyberlink.com/Retail/PowerDirector/MQ21VBFJCHI0P9O/PowerDirector_DirectorSuite365.exe",
+      "token": "MQ21VBFJCHI0P9O",
+      "size": 724769216,
+      "build_date": "2026-09-08",
+      "md5": "606205d30e8f17fd002b161688a36f58"
+    },
+    {
+      "product": "PhotoDirector",
+      "product_key": "photodirector",
+      "version": "18.0.8.0908.0",
+      "link": "https://build.cyberlink.com/Retail/PhotoDirector/Y2QIW32JB74CH/PhotoDirector_DirectorSuite365.exe",
+      "token": "Y2QIW32JB74CH",
+      "size": 669828616,
+      "build_date": "2026-09-08",
+      "md5": "02769dcdca897ea1574c2de844c4d76e"
+    }
+  ]
+};
+
+function copyText(id, btn) {
+  var el = document.getElementById(id);
+  var text = el.tagName === 'A' ? el.href : el.textContent;
+  if (!text || text === '-' || text === 'Loading...') return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function() {
+      if (btn) { btn.classList.add('copied'); setTimeout(function(){ btn.classList.remove('copied'); }, 1500); }
+      showToast('Copied to clipboard');
+    }).catch(function() { fallbackCopy(text, btn); });
+  } else {
+    fallbackCopy(text, btn);
+  }
+}
+
+function fallbackCopy(text, btn) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+  if (btn) { btn.classList.add('copied'); setTimeout(function(){ btn.classList.remove('copied'); }, 1500); }
+  showToast('Copied to clipboard');
+}
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 2000);
+}
+
+function formatSize(bytes) {
+  if (!bytes || isNaN(bytes)) return '?';
+  var n = parseInt(bytes);
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n/1048576).toFixed(1) + ' MB';
+  return (n/1073741824).toFixed(2) + ' GB';
+}
+
+function formatDate(isoStr) {
+  if (!isoStr) return '?';
+  try {
+    var d = new Date(isoStr);
+    return d.toISOString().slice(0, 10);
+  } catch(e) {
+    return String(isoStr).slice(0, 10);
+  }
+}
+
+function updateCard(key, data) {
+  var link = data.link || '#';
+  var md5 = data.md5 || '-';
+  var token = data.token || '-';
+  var version = data.version ? 'v' + data.version : '-';
+  var size = data.size ? formatSize(data.size) + ' (' + parseInt(data.size).toLocaleString() + ' bytes)' : '-';
+  var buildDate = data.build_date || formatDate(data.fetched_at) || '-';
+
+  var linkEl = document.getElementById('link-' + key);
+  linkEl.href = link;
+  linkEl.textContent = link;
+  document.getElementById('md5-' + key).textContent = md5;
+  document.getElementById('token-' + key).textContent = token;
+  document.getElementById('meta-' + key).textContent = size + ' / ' + version + ' / ' + buildDate;
+  document.getElementById('badge-' + key).textContent = 'Auto-Update';
+  document.getElementById('badge-' + key).className = 'badge';
+}
+
+function renderData(data) {
+  if (data && data.products) {
+    for (var i = 0; i < data.products.length; i++) {
+      var p = data.products[i];
+      if (p.product_key === 'powerdirector') updateCard('pd', p);
+      else if (p.product_key === 'photodirector') updateCard('phd', p);
+    }
+  }
+  var updated = data.updated_at ? formatDate(data.updated_at) : '?';
+  document.getElementById('footer').innerHTML =
+    'Data updated: ' + updated + ' | Click link to download | Contact for update if token expires<br>' +
+    '<a href="https://www.423down.com" target="_blank">423down.com</a>';
+}
+
+renderData(EMBEDDED_DATA);
+
+function fetchLatest() {
+  try {
+    fetch('data.json?t=' + Date.now(), { cache: 'no-store' })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function(data) {
+        if (data && data.products && data.products.length > 0) {
+          renderData(data);
+        }
+      })
+      .catch(function(e) {
+        console.log('Using embedded data (fetch failed):', e.message);
+      });
+  } catch(e) {
+    console.log('Fetch error:', e.message);
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', fetchLatest);
+} else {
+  fetchLatest();
+}
+</script>
+</body>
+</html>
