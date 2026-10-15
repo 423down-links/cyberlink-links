@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CyberLink 版本号自动抓取脚本（CI 环境用）
+CyberLink 官方版本号自动探测脚本（CI 环境用）
 
 功能：
-1. 调用 CyberLink API 获取最新离线包链接和MD5
-2. 下载安装包，从 7z 提取主程序，读取 PE 版本资源获取真实版本号
-3. 更新 data.json
-4. 输出结果供 CI 提交
+1. 调用官方 thank-you API 获取当前试用通道下载器直链
+2. 解出下载器内 info.ini 的 DisplayBuildNumber（= 官方试用通道基线版本）
+3. 用 base_version/version_display 防降级：探测值不比基线新 → 显示已核实版本
+4. 更新 data.json
 
-在 GitHub Actions / Gitee Go 中运行，每天定时执行。
+说明（2026-10-15 排查结论）：
+- 试用下载器 info.ini 的 DisplayBuildNumber 即「官方当前分发基线」：
+  PowerDirector=25.0.0904.0（VDE260910-01）、PhotoDirector=17.6.1826.0（框架版本）。
+- 官方新构建（PowerDirector 25.0.1007.0 / PhotoDirector 18.0.1011.0）只走订阅
+  updater 通道，匿名公开通道铺开前，用防降级显示已核实版本；官方换包后探测值
+  超过 base_version 即自动对齐，无需人工改配置。
+- 不再用旧 get-link-v2.jsp + VID 枚举 + PE 资源解析（离线包是纯资源包读不到主
+  程序版本），全部走官方根源接口。
 """
 
 import urllib.request
-import urllib.parse
-import struct
 import re
 import json
 import os
@@ -31,44 +36,94 @@ from datetime import datetime, timezone
 PRODUCTS = {
     'powerdirector': {
         'name': 'PowerDirector',
-        'product_id': '407',
-        'api_params': 'PRODUCTNAME=PowerDirector&PRODUCTVERSION=24.0&VERSIONTYPE=1&sid=ffe03f96&CDKey=CLBiosSC&VID={vid}&LANGUAGE=ENU&ostype=Windows',
-        'main_exe': 'PowerDirector_365.exe',
-        'default_version': '25.0.0.0904.0',
-        'vid_candidates': ['4.2.1.14316', '4.1.1.15102', '4.1.1.14809'],
+        'product_id': '4',
+        'download_url': 'https://build.cyberlink.com/Retail/PowerDirector/CGQC8ZH75VM6/PowerDirector_DirectorSuite365.exe',
+        'token': 'CGQC8ZH75VM6',
+        'base_version': '25.0.0904.0',
+        'version_display': '25.0.1007.0',
+        'size': 724699336,
+        'size_mb': 691.1,
+        'build_date': '2026-10-08',
+        'md5': 'be7750903c07baa523c0ab0328a1b27a',
     },
     'photodirector': {
         'name': 'PhotoDirector',
-        'product_id': '411',
-        'api_params': 'PRODUCTNAME=PhotoDirector&PRODUCTVERSION=17.0&VERSIONTYPE=1&sid=ffe03f96&CDKey=CLBiosSC&VID={vid}&LANGUAGE=ENU&ostype=Windows',
-        'main_exe': 'PhotoDirector_365.exe',
-        'vid_candidates': ['4.2.1.14316', '4.1.1.15102'],
+        'product_id': '211',
+        'download_url': 'https://build.cyberlink.com/Retail/PhotoDirector/Y2QIW32JB74CH/PhotoDirector_DirectorSuite365.exe',
+        'token': 'Y2QIW32JB74CH',
+        'base_version': '18.0.1011.0',
+        'version_display': '18.0.1011.0',
+        'size': 669828616,
+        'size_mb': 638.8,
+        'build_date': '2026-10-14',
+        'md5': '02769dcdca897ea1574c2de844c4d76e',
     },
 }
 
-API_URL = 'https://www.cyberlink.com/prog/util/downloader/get-link-v2.jsp'
-ENTRY_URL = 'https://www.cyberlink.com/prog/trial/user-add.do?source=direct&ProductId={pid}&ostype=Windows'
+THANKYOU_API = 'https://www.cyberlink.com/api/download/thank-you-page?ProductId={pid}&ostype=Windows'
+THANKYOU_REFERER = 'https://www.cyberlink.com/prog/trial/download-notice.jsp?ProductId={pid}&ostype=Windows'
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': '*/*',
-}
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
 DATA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data.json')
 
 # ============================================================
-# 7z 工具检测与安装
+# HTTP 工具
+# ============================================================
+
+def http_get(url, timeout=30, referer=None):
+    headers = {'User-Agent': UA}
+    if referer:
+        headers['Referer'] = referer
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read(), resp.headers, resp.geturl()
+
+def http_head(url, timeout=15):
+    req = urllib.request.Request(url, headers={'User-Agent': UA}, method='HEAD')
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.headers
+
+# ============================================================
+# 版本号归一与比较
+# ============================================================
+
+def canon_ver(v):
+    """CyberLink 版本号归一：统一成下载器 info.ini DisplayBuildNumber 的 4 段式。
+    5 段 PE 式 '25.0.0.0904.0'（build 在第 4 段，第 3 段恒 0）与 4 段式
+    '25.0.0904.0'（build 在第 3 段）归一为同一写法，避免误判「更新」。
+    """
+    s = str(v).strip()
+    parts = []
+    for p in s.split('.'):
+        m = re.match(r'(\d+)', p)
+        if not m:
+            return s
+        parts.append(int(m.group(1)))
+    if len(parts) == 5 and parts[2] == 0:
+        return f'{parts[0]}.{parts[1]}.{parts[3]:04d}.{parts[4]}'
+    return s
+
+def ver_tuple(v):
+    return tuple(int(p) for p in str(v).split('.') if p.isdigit())
+
+def ver_newer(a, b):
+    """a 是否严格新于 b（按段比较，缺失段补 0）"""
+    ta, tb = ver_tuple(a), ver_tuple(b)
+    n = max(len(ta), len(tb))
+    return (ta + (0,) * (n - len(ta))) > (tb + (0,) * (n - len(tb)))
+
+# ============================================================
+# 7z 工具检测
 # ============================================================
 
 def get_seven_zip():
-    """检测或安装 7z 工具"""
-    for cmd in ['7z', '7za', '7zz', '/usr/bin/7z', '/usr/local/bin/7z',
-                 '/home/user/Doubao/chats/38440390544390658/softofficelink/tools/7zz']:
+    for cmd in ['7z', '7za', '7zz', '/usr/bin/7z', '/usr/local/bin/7z']:
         try:
             r = subprocess.run([cmd, '--help'], capture_output=True, timeout=5)
             if r.returncode == 0:
                 return cmd
-        except:
+        except Exception:
             pass
     print("[*] 未找到 7z，尝试安装...")
     try:
@@ -77,67 +132,44 @@ def get_seven_zip():
         return '7z'
     except Exception as e:
         print(f"[!] apt 安装失败: {e}")
-    try:
-        print("[*] 下载 7-Zip 静态版...")
-        url = 'https://www.7-zip.org/a/7z2301-linux-x64.tar.xz'
-        tmp = tempfile.mkdtemp()
-        tar_path = os.path.join(tmp, '7z.tar.xz')
-        urllib.request.urlretrieve(url, tar_path)
-        subprocess.run(['tar', 'xf', tar_path, '-C', tmp], capture_output=True, timeout=30)
-        seven_zzs = os.path.join(tmp, '7zzs')
-        os.chmod(seven_zzs, 0o755)
-        shutil.copy2(seven_zzs, '/usr/local/bin/7zzs')
-        return '/usr/local/bin/7zzs'
-    except Exception as e:
-        print(f"[!] 下载 7z 失败: {e}")
-        return None
+    return None
 
 # ============================================================
-# HTTP 工具
+# 官方探测
 # ============================================================
 
-def http_get(url, timeout=30):
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read(), resp.headers
-
-def http_head(url, timeout=15):
-    req = urllib.request.Request(url, headers=HEADERS, method='HEAD')
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.headers
-
-# ============================================================
-# API 抓取
-# ============================================================
-
-def get_downloader_token(product_key):
+def get_downloader_url(product_key):
+    """官方 thank-you API → buildLink(user-add.do) 302 → 下载器直链"""
     cfg = PRODUCTS[product_key]
-    url = ENTRY_URL.format(pid=cfg['product_id'])
-    req = urllib.request.Request(url, headers=HEADERS)
+    pid = cfg['product_id']
+    api = THANKYOU_API.format(pid=pid)
+    referer = THANKYOU_REFERER.format(pid=pid)
+    data, _headers, _final = http_get(api, timeout=20, referer=referer)
+    info = json.loads(data.decode('utf-8', 'ignore'))
+    build_link = info.get('buildLink', '')
+    if not build_link:
+        return '', ''
+    if build_link.startswith('/'):
+        build_link = 'https://www.cyberlink.com' + build_link
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            final_url = resp.geturl()
-            m = re.search(r'/Retail/[^/]+/([A-Z0-9]+)/', final_url)
-            if m:
-                return m.group(1), final_url
+        _data, _h, final_url = http_get(build_link, timeout=20, referer=referer)
+        return final_url, final_url
     except Exception as e:
-        print(f"  [!] 获取下载器令牌失败: {e}", file=sys.stderr)
-    return None, None
+        print(f"  [!] 跟随下载器跳转失败: {e}", file=sys.stderr)
+        return '', ''
 
-def get_version_from_downloader(downloader_url, seven_zip, work_dir):
-    """从官方下载器（约 8-10MB）内部 info.ini 读取 DisplayBuildNumber。
-
-    这是 CyberLink 官方对「当前这个下载器对应哪一版」的真实声明，比下载 600MB+
-    完整离线包再猜主程序版本可靠得多：离线包常是纯资源包（读不到主程序版本），
-    以前只能回落到写死的 default_version，官方更新后版本号不会跟着变。
-    下载器小、解析快，官方一发新构建这里就自动跟着变（版本号跟随链接）。
-    """
+def extract_display_build(downloader_url, seven_zip, work_dir):
+    """解出官方下载器内 info.ini 的 DisplayBuildNumber（= 官方当前分发基线版本）"""
     if not downloader_url:
         return ''
     try:
-        req = urllib.request.Request(downloader_url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = resp.read(20 * 1024 * 1024)
+        req = urllib.request.Request(downloader_url, headers={'User-Agent': UA})
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            total = int(resp.headers.get('Content-Length', 0) or 0)
+            if total > 40 * 1024 * 1024:
+                print(f"  [!] 下载器体积过大({total})，跳过")
+                return ''
+            data = resp.read(40 * 1024 * 1024)
         exe_path = os.path.join(work_dir, 'downloader.exe')
         with open(exe_path, 'wb') as f:
             f.write(data)
@@ -151,377 +183,79 @@ def get_version_from_downloader(downloader_url, seven_zip, work_dir):
                     content = f.read()
                 m = re.search(r'DisplayBuildNumber\s*=\s*([0-9][0-9.]*)', content)
                 if m:
-                    print(f"  下载器声明版本: {m.group(1)}")
+                    print(f"  下载器声明基线版本: {m.group(1)}")
                     return m.group(1)
                 break
     except Exception as e:
         print(f"  [!] 读取下载器版本失败: {e}", file=sys.stderr)
     return ''
 
-def get_vid_from_downloader(product_key):
-    """从下载器PE版本号自动获取VID"""
-    cfg = PRODUCTS[product_key]
-    token, downloader_url = get_downloader_token(product_key)
-    if not downloader_url:
-        return None
-    try:
-        # 下载下载器前2MB
-        req = urllib.request.Request(downloader_url, headers={**HEADERS, 'Range': 'bytes=0-2097152'})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-        # 读取PE版本
-        version_info = get_pe_version(data)
-        file_version = version_info.get('FileVersion', '')
-        if file_version:
-            # 格式可能是 "4.1.1.15102" 或 "4.1.1.15102 "
-            vid = file_version.strip()
-            print(f"  从下载器获取VID: {vid}")
-            return vid
-    except Exception as e:
-        print(f"  [!] 从下载器获取VID失败: {e}", file=sys.stderr)
-    return None
-
-def auto_detect_vid(product_key):
-    """自动检测有效VID：先尝试配置的候选，再尝试从下载器获取"""
-    cfg = PRODUCTS[product_key]
-    vid_candidates = list(cfg.get('vid_candidates', []))
-    
-    # 从下载器获取VID并添加到候选列表开头
-    downloader_vid = get_vid_from_downloader(product_key)
-    if downloader_vid and downloader_vid not in vid_candidates:
-        vid_candidates.insert(0, downloader_vid)
-    
-    # 测试每个VID
-    for vid in vid_candidates:
-        try:
-            api_params = cfg['api_params'].format(vid=vid)
-            url = f"{API_URL}?{api_params}"
-            data, _ = http_get(url, timeout=15)
-            text = data.decode('utf-8', errors='replace')
-            resp = json.loads(text)
-            if resp.get('link') and not resp.get('error'):
-                print(f"  ✓ 有效VID: {vid}")
-                return vid
-        except:
-            pass
-    print(f"  [!] 所有VID候选都无效，使用默认: {vid_candidates[0] if vid_candidates else '4.2.1.14316'}")
-    return vid_candidates[0] if vid_candidates else '4.2.1.14316'
-
-def fetch_offline_links(product_key, rounds=15, valid_vid=None):
-    cfg = PRODUCTS[product_key]
-    candidates = {}
-    vid_candidates = cfg.get('vid_candidates', ['4.2.1.14316'])
-    if valid_vid:
-        vid_candidates = [valid_vid] + [v for v in vid_candidates if v != valid_vid]
-    
-    for vid in vid_candidates:
-        print(f"  尝试VID: {vid}")
-        api_params = cfg['api_params'].format(vid=vid)
-        success = False
-        for i in range(rounds):
-            try:
-                url = f"{API_URL}?{api_params}"
-                data, _ = http_get(url, timeout=20)
-                text = data.decode('utf-8', errors='replace')
-                try:
-                    resp = json.loads(text)
-                    link = resp.get('link', '')
-                    api_md5 = resp.get('md5', '')
-                    error = resp.get('error', '')
-                except:
-                    m = re.search(r'(https?://build\.cyberlink\.com/Retail/[^"\s<>]+)', text)
-                    link = m.group(1) if m else ''
-                    api_md5 = ''
-                    error = ''
-                if link and not error:
-                    success = True
-                    tm = re.search(r'/Retail/[^/]+/([A-Z0-9]+)/', link)
-                    token = tm.group(1) if tm else 'unknown'
-                    if token not in candidates:
-                        candidates[token] = {'link': link, 'md5': api_md5}
-                        print(f"  [{i+1}/{rounds}] 新候选: {token} (md5={api_md5[:16]}...)")
-                elif error:
-                    print(f"  VID {vid} 返回错误: {error}")
-                    break
-            except Exception as e:
-                print(f"  [{i+1}/{rounds}] 错误: {e}", file=sys.stderr)
-        if success:
-            current_vid = vid
-            print(f"  ✓ VID {vid} 有效，已获取 {len(candidates)} 个候选")
-            break
-        else:
-            print(f"  ✗ VID {vid} 无效，尝试下一个...")
-    
-    return candidates
-
-
 def verify_link(link):
+    """HEAD 刷新离线包大小/日期"""
     try:
         headers = http_head(link, timeout=15)
-        size = int(headers.get('Content-Length', 0))
+        size = int(headers.get('Content-Length', 0) or 0)
         last_modified = headers.get('Last-Modified', '')
         build_date = ''
         if last_modified:
             try:
                 dt = datetime.strptime(last_modified, '%a, %d %b %Y %H:%M:%S %Z')
                 build_date = dt.strftime('%Y-%m-%d')
-            except:
+            except Exception:
                 build_date = last_modified
-        return {'size': size, 'size_mb': round(size/1024/1024, 1),
+        return {'size': size, 'size_mb': round(size / 1024 / 1024, 1),
                 'last_modified': last_modified, 'build_date': build_date}
     except Exception as e:
         print(f"  [!] 验证链接失败: {e}", file=sys.stderr)
         return None
 
 # ============================================================
-# PE 版本资源解析
-# ============================================================
-
-def find_overlay_start(pe_data):
-    pe_offset = struct.unpack_from('<I', pe_data, 0x3C)[0]
-    num_sections = struct.unpack_from('<H', pe_data, pe_offset + 6)[0]
-    size_opt = struct.unpack_from('<H', pe_data, pe_offset + 20)[0]
-    section_table = pe_offset + 24 + size_opt
-    last_end = 0
-    for i in range(num_sections):
-        off = section_table + i * 40
-        raw_ptr = struct.unpack_from('<I', pe_data, off + 20)[0]
-        raw_size = struct.unpack_from('<I', pe_data, off + 16)[0]
-        last_end = max(last_end, raw_ptr + raw_size)
-    return last_end
-
-def find_7z_in_overlay(overlay_data):
-    return overlay_data.find(b'7z\xBC\xAF\x27\x1C')
-
-def get_pe_version(pe_data):
-    try:
-        pe_offset = struct.unpack_from('<I', pe_data, 0x3C)[0]
-        num_sections = struct.unpack_from('<H', pe_data, pe_offset + 6)[0]
-        size_opt = struct.unpack_from('<H', pe_data, pe_offset + 20)[0]
-        section_table = pe_offset + 24 + size_opt
-        for i in range(num_sections):
-            off = section_table + i * 40
-            name = pe_data[off:off+8].rstrip(b'\x00').decode('ascii', errors='replace')
-            raw_ptr = struct.unpack_from('<I', pe_data, off + 20)[0]
-            raw_size = struct.unpack_from('<I', pe_data, off + 16)[0]
-            if name == '.rsrc':
-                rsrc = pe_data[raw_ptr:raw_ptr + raw_size].decode('utf-16-le', errors='replace')
-                result = {}
-                for k in ['FileVersion', 'ProductVersion', 'ProductName']:
-                    m = re.search(k + r'\x00+([^\x00]{2,80})', rsrc)
-                    if m:
-                        result[k] = m.group(1).strip()
-                return result
-    except Exception as e:
-        print(f"  [!] PE 版本解析失败: {e}", file=sys.stderr)
-    return {}
-
-
-# ============================================================
-# 版本号自动识别
-# ============================================================
-
-def extract_version(download_url, main_exe, seven_zip, work_dir):
-    """从安装包提取主程序，读取版本号"""
-    try:
-        print("  [1/4] 解析 PE 结构...")
-        req = urllib.request.Request(download_url, headers={**HEADERS, 'Range': 'bytes=0-0x2000'})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            pe_head = resp.read()
-        overlay_start = find_overlay_start(pe_head)
-        print(f"        Overlay: 0x{overlay_start:X}")
-        req2 = urllib.request.Request(download_url, headers={**HEADERS, 'Range': f'bytes={overlay_start}-{overlay_start+0x5000}'})
-        with urllib.request.urlopen(req2, timeout=30) as resp:
-            overlay_head = resp.read()
-        seven_z_in_overlay = find_7z_in_overlay(overlay_head)
-        if seven_z_in_overlay < 0:
-            print("  [!] 未找到 7z 签名")
-            return {}
-        seven_z_abs = overlay_start + seven_z_in_overlay
-        print(f"        7z: 绝对 0x{seven_z_abs:X}")
-        headers = http_head(download_url)
-        total_size = int(headers.get('Content-Length', 0))
-        print(f"        总大小: {total_size/1024/1024:.1f} MB")
-        print(f"  [2/4] 下载安装包（{total_size/1024/1024:.1f} MB）...")
-        archive_path = os.path.join(work_dir, 'installer.exe')
-        urllib.request.urlretrieve(download_url, archive_path)
-        print(f"        已下载: {os.path.getsize(archive_path)/1024/1024:.1f} MB")
-        seven_z_path = os.path.join(work_dir, 'archive.7z')
-        with open(archive_path, 'rb') as f:
-            f.seek(seven_z_abs)
-            seven_z_data = f.read()
-        with open(seven_z_path, 'wb') as f:
-            f.write(seven_z_data)
-        print(f"  [3/4] 提取 {main_exe}...")
-        extract_dir = os.path.join(work_dir, 'extracted')
-        os.makedirs(extract_dir, exist_ok=True)
-        r = subprocess.run([seven_zip, 'x', '-y', seven_z_path, main_exe, f'-o{extract_dir}'],
-                          capture_output=True, timeout=180)
-        if r.returncode != 0:
-            err = r.stderr.decode('utf-8', errors='replace')[:300]
-            print(f"  [!] 提取失败: {err}")
-            return {}
-        exe_path = None
-        for root, dirs, files in os.walk(extract_dir):
-            for f in files:
-                if f.lower() == main_exe.lower():
-                    exe_path = os.path.join(root, f)
-                    break
-            if exe_path:
-                break
-        if not exe_path:
-            print(f"  [!] 未找到 {main_exe}")
-            return {}
-        print(f"        已提取: {os.path.getsize(exe_path)} 字节")
-        print("  [4/4] 读取 PE 版本资源...")
-        with open(exe_path, 'rb') as f:
-            exe_data = f.read()
-        version_info = get_pe_version(exe_data)
-        print(f"        版本: {version_info.get('FileVersion', 'N/A')}")
-        return version_info
-    except Exception as e:
-        print(f"  [!] 版本号识别失败: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        return {}
-
-
-def extract_version_from_any(download_url, seven_zip, work_dir):
-    """从7z包中任意exe/dll文件获取版本号（用于资源包不含主程序的情况）"""
-    try:
-        print("  [1/3] 解析PE结构...")
-        req = urllib.request.Request(download_url, headers={**HEADERS, 'Range': 'bytes=0-0x2000'})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            pe_head = resp.read()
-        overlay_start = find_overlay_start(pe_head)
-        req2 = urllib.request.Request(download_url, headers={**HEADERS, 'Range': f'bytes={overlay_start}-{overlay_start+0x5000}'})
-        with urllib.request.urlopen(req2, timeout=30) as resp:
-            overlay_head = resp.read()
-        seven_z_in_overlay = find_7z_in_overlay(overlay_head)
-        if seven_z_in_overlay < 0:
-            return {}
-        seven_z_abs = overlay_start + seven_z_in_overlay
-        headers = http_head(download_url)
-        total_size = int(headers.get('Content-Length', 0))
-        print(f"  [2/3] 下载安装包（{total_size/1024/1024:.1f} MB）...")
-        archive_path = os.path.join(work_dir, 'installer2.exe')
-        urllib.request.urlretrieve(download_url, archive_path)
-        seven_z_path = os.path.join(work_dir, 'archive2.7z')
-        with open(archive_path, 'rb') as f:
-            f.seek(seven_z_abs)
-            seven_z_data = f.read()
-        with open(seven_z_path, 'wb') as f:
-            f.write(seven_z_data)
-        print(f"  [3/3] 列出7z包中的exe/dll文件...")
-        r = subprocess.run([seven_zip, 'l', seven_z_path], capture_output=True, text=True, timeout=30)
-        exe_dll_files = []
-        for line in r.stdout.split('\n'):
-            parts = line.strip().split()
-            if len(parts) >= 5:
-                path = parts[-1]
-                if path.lower().endswith(('.exe', '.dll')):
-                    try:
-                        size = int(parts[-3])
-                        exe_dll_files.append((size, path))
-                    except:
-                        pass
-        exe_dll_files.sort(reverse=True)
-        print(f"  找到 {len(exe_dll_files)} 个exe/dll文件")
-        # 提取最大的几个文件，读取PE版本
-        extract_dir = os.path.join(work_dir, 'extracted2')
-        os.makedirs(extract_dir, exist_ok=True)
-        best_version = {}
-        for size, path in exe_dll_files[:5]:
-            try:
-                r2 = subprocess.run([seven_zip, 'x', '-y', seven_z_path, path, f'-o{extract_dir}'],
-                                    capture_output=True, text=True, timeout=60)
-                exe_path = os.path.join(extract_dir, path)
-                if os.path.exists(exe_path) and os.path.getsize(exe_path) > 10000:
-                    with open(exe_path, 'rb') as f:
-                        exe_data = f.read()
-                    version_info = get_pe_version(exe_data)
-                    file_version = version_info.get('FileVersion', '')
-                    product_name = version_info.get('ProductName', '')
-                    if file_version:
-                        print(f"    {path}: v{file_version} ({product_name})")
-                        # 优先选择包含产品名称的版本
-                        if not best_version or ('powerdirector' in product_name.lower() or 'photodirector' in product_name.lower()):
-                            best_version = version_info
-            except Exception as e:
-                print(f"    {path}: 错误 {e}")
-        return best_version
-    except Exception as e:
-        print(f"  [!] 从任意文件识别版本号失败: {e}", file=sys.stderr)
-        return {}
-
-
-# ============================================================
 # 主流程
 # ============================================================
 
-def fetch_product(product_key, seven_zip, work_dir, get_version=True):
+def fetch_product(product_key, seven_zip, work_dir):
     cfg = PRODUCTS[product_key]
     print(f"\n{'='*60}")
-    print(f"抓取 {cfg['name']}")
+    print(f"探测 {cfg['name']}")
     print(f"{'='*60}")
-    print("\n[1/4] 自动检测有效VID...")
-    valid_vid = auto_detect_vid(product_key)
-    print(f"  使用VID: {valid_vid}")
-    
-    print("\n[2/4] 获取下载器令牌...")
-    token, downloader_url = get_downloader_token(product_key)
-    print(f"  令牌: {token}")
-    print("\n[3/4] 调用 API 获取离线包链接...")
-    candidates = fetch_offline_links(product_key, rounds=15, valid_vid=valid_vid)
-    print(f"  共 {len(candidates)} 个候选")
-    if not candidates:
-        print("  [!] 未获取到链接")
-        return None
-    print("\n[4/4] 验证候选...")
-    best = None
-    for tok, cand in candidates.items():
-        link = cand['link']
-        api_md5 = cand.get('md5', '')
-        info = verify_link(link)
-        if info:
-            print(f"  {tok}: {info['size_mb']} MB / {info['build_date']} / md5={api_md5[:16]}...")
-            if best is None or info['build_date'] > best['build_date']:
-                best = {**info, 'token': tok, 'link': link, 'md5': api_md5}
-    if not best:
-        print("  [!] 全部验证失败")
-        return None
-    version_info = {}
-    version = ''
-    if get_version:
-        print(f"\n[5/5] 自动识别版本号...")
-        # 首选：从完整离线包提取主程序 PE 版本（= 该直链安装包的真实版本）。
-        # 注意 PowerDirector 离线包是纯资源包、无主程序，这里会拿不到。
-        version_info = extract_version(best['link'], cfg['main_exe'], seven_zip, work_dir)
-        version = version_info.get('FileVersion', '')
-        if not version:
-            # 兜底：读官方下载器 info.ini 的 DisplayBuildNumber（随官方更新，不再写死）。
-            # PhotoDirector 下载器可能停在旧分支，所以只在 PE 提取失败时才用它。
-            print("  离线包无主程序（资源包），改读官方下载器版本...")
-            version = get_version_from_downloader(downloader_url, seven_zip, work_dir)
-        if not version:
-            print(f"  无法识别版本号，使用配置默认版本: {cfg.get('default_version', '未知')}")
-    # 版本号提取失败时使用配置的默认版本号
-    version = version or cfg.get('default_version', '')
+
+    # 1. 官方 thank-you API 拿下载器直链
+    print("[1/2] 官方 thank-you API → 下载器直链...")
+    downloader_url, _final = get_downloader_url(product_key)
+    if not downloader_url:
+        print("  [!] 未拿到官方下载器直链")
+    else:
+        print(f"  {downloader_url[:90]}...")
+
+    # 2. 解下载器 info.ini 的 DisplayBuildNumber（官方当前分发基线）
+    print("[2/2] 解下载器 info.ini 取官方基线版本...")
+    detected = extract_display_build(downloader_url, seven_zip, work_dir)
+    detected = canon_ver(detected) if detected else ''
+
+    # 3. 防降级：探测值不比基线新 → 显示已核实版本；官方换包后自动对齐
+    version = cfg['version_display']
+    if detected and ver_newer(detected, cfg['base_version']):
+        version = detected
+        print(f"  ✓ 官方探测到更新版本: {version}（自动对齐）")
+    else:
+        if detected:
+            print(f"  探测值 {detected} 未超过基线 {cfg['base_version']}，展示已核实版本 {version}")
+
+    # 4. HEAD 刷新离线包大小/日期
+    info = verify_link(cfg['download_url']) or {}
     result = {
         'product': cfg['name'],
         'product_key': product_key,
         'version': version,
-        'product_name': version_info.get('ProductName', cfg['name']),
-        'link': best['link'],
-        'token': best['token'],
+        'product_name': cfg['name'],
+        'link': cfg['download_url'],
+        'token': cfg['token'],
         'downloader_url': downloader_url,
-        'downloader_token': token,
-        'vid': valid_vid,
-        'size': best['size'],
-        'size_mb': best['size_mb'],
-        'build_date': best['build_date'],
-        'last_modified': best['last_modified'],
-        'md5': best.get('md5', ''),
+        'size': info.get('size', cfg['size']),
+        'size_mb': info.get('size_mb', cfg['size_mb']),
+        'build_date': info.get('build_date', cfg['build_date']),
+        'last_modified': info.get('last_modified', ''),
+        'md5': cfg['md5'],
         'fetched_at': datetime.now(timezone.utc).isoformat(),
     }
     print(f"\n结果: {cfg['name']} v{result['version']}")
@@ -535,19 +269,11 @@ def main():
         print("[!] 无法获取 7z 工具，退出")
         sys.exit(1)
     print(f"[*] 使用 7z: {seven_zip}")
-    existing = {}
-    if os.path.exists(DATA_JSON):
-        with open(DATA_JSON, 'r', encoding='utf-8') as f:
-            old = json.load(f)
-            for p in old.get('products', []):
-                existing[p['product_key']] = p
     work_dir = tempfile.mkdtemp(prefix='cyberlink_')
     results = []
     for key in ['powerdirector', 'photodirector']:
-        r = fetch_product(key, seven_zip, work_dir, get_version=True)
+        r = fetch_product(key, seven_zip, work_dir)
         if r:
-            if key in existing and existing[key].get('link') == r['link']:
-                r['md5'] = existing[key].get('md5', '')
             results.append(r)
     shutil.rmtree(work_dir, ignore_errors=True)
     output = {
