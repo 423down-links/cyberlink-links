@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-16T03:09:55.749625+00:00",
+  "updated_at": "2026-10-17T03:01:19.538709+00:00",
   "products": [
     {
       "product": "PowerDirector",
@@ -8,13 +8,13 @@
       "product_name": "PowerDirector",
       "link": "https://build.cyberlink.com/Retail/PowerDirector/CGQC8ZH75VM6/PowerDirector_DirectorSuite365.exe",
       "token": "CGQC8ZH75VM6",
-      "downloader_url": "https://build.cyberlink.com/Retail/PowerDirector/27R3WVICZTKHVK/CyberLink_PowerDirector_Downloader.exe",
+      "downloader_url": "https://build.cyberlink.com/Retail/PowerDirector/LJZVDVSX0QV1A/CyberLink_PowerDirector_Downloader.exe",
       "size": 724699336,
       "size_mb": 691.1,
       "build_date": "2026-09-14",
       "last_modified": "Mon, 14 Sep 2026 03:47:53 GMT",
       "md5": "be7750903c07baa523c0ab0328a1b27a",
-      "fetched_at": "2026-10-16T03:09:55.168489+00:00"
+      "fetched_at": "2026-10-17T03:01:18.704426+00:00"
     },
     {
       "product": "PhotoDirector",
@@ -29,7 +29,7 @@
       "build_date": "2026-09-08",
       "last_modified": "Tue, 08 Sep 2026 04:59:31 GMT",
       "md5": "02769dcdca897ea1574c2de844c4d76e",
-      "fetched_at": "2026-10-16T03:09:55.748730+00:00"
+      "fetched_at": "2026-10-17T03:01:19.537987+00:00"
     }
   ]
 }
