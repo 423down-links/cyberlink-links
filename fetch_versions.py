@@ -6,17 +6,24 @@ CyberLink 官方版本号自动探测脚本（CI 环境用）
 功能：
 1. 调用官方 thank-you API 获取当前试用通道下载器直链
 2. 解出下载器内 info.ini 的 DisplayBuildNumber（= 官方试用通道基线版本）
-3. 用 base_version/version_display 防降级：探测值不比基线新 → 显示已核实版本
+3. 再从 nsane「Software Updates」板块标题取零售版（Ultimate/Ultra 买断版）最新版本，
+   与官方试用通道取较新者
 4. 更新 data.json
 
-说明（2026-10-15 排查结论）：
-- 试用下载器 info.ini 的 DisplayBuildNumber 即「官方当前分发基线」：
+说明（2026-10-25 排查结论）：
+- 试用下载器 info.ini 的 DisplayBuildNumber 即「官方试用通道当前基线」：
   PowerDirector=25.0.0904.0（VDE260910-01）、PhotoDirector=17.6.1826.0（框架版本）。
-- 官方新构建（PowerDirector 25.0.1007.0 / PhotoDirector 18.0.1011.0）只走订阅
-  updater 通道，匿名公开通道铺开前，用防降级显示已核实版本；官方换包后探测值
-  超过 base_version 即自动对齐，无需人工改配置。
+- 官方匿名通道只铺「试用」基线，零售新构建（PowerDirector 25.0.1019.0 等）走买断/
+  零售通道，匿名官方接口取不到（补丁中心只到 2025 线、零售兑换需密钥、ProductId=270
+  的 Ultimate Suite 通道 S3 对象 403）。
+- 旧方案用 version_display 写死人工核实的零售版号，等于把版本钉死在常量上，
+  官方再发新版也不会动 → 这正是「版本长期停在旧版」的根因。
+- 现改为：零售版版本号由 nsane 板块标题自动解析，与官方试用通道**双向取较新者**。
+  官方试用通道铺开新版本后自动对齐；零售先发时也能跟上，不再需要人工改配置。
+- PhotoDirector 的试用值是安装框架版本（17.6.x），≠ 产品版本（18.x），
+  用 trial_version_trusted=False 排除。
 - 不再用旧 get-link-v2.jsp + VID 枚举 + PE 资源解析（离线包是纯资源包读不到主
-  程序版本），全部走官方根源接口。
+  程序版本），全部走官方根源接口 + 零售版本源。
 """
 
 import urllib.request
@@ -24,10 +31,11 @@ import re
 import json
 import os
 import sys
+import html as html_mod
 import subprocess
 import tempfile
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ============================================================
 # 配置
@@ -40,11 +48,13 @@ PRODUCTS = {
         'download_url': 'https://build.cyberlink.com/Retail/PowerDirector/CGQC8ZH75VM6/PowerDirector_DirectorSuite365.exe',
         'token': 'CGQC8ZH75VM6',
         'base_version': '25.0.0904.0',
-        'version_display': '25.0.1007.0',
         'size': 724699336,
         'size_mb': 691.1,
-        'build_date': '2026-10-08',
+        'build_date': '2026-09-14',
         'md5': 'be7750903c07baa523c0ab0328a1b27a',
+        # 零售版版本源（见 fetch_retail_version 说明）
+        'retail_nsane': True,
+        'retail_keywords': ['powerdirector'],
     },
     'photodirector': {
         'name': 'PhotoDirector',
@@ -52,16 +62,25 @@ PRODUCTS = {
         'download_url': 'https://build.cyberlink.com/Retail/PhotoDirector/Y2QIW32JB74CH/PhotoDirector_DirectorSuite365.exe',
         'token': 'Y2QIW32JB74CH',
         'base_version': '18.0.1011.0',
-        'version_display': '18.0.1011.0',
         'size': 669828616,
         'size_mb': 638.8,
-        'build_date': '2026-10-14',
+        'build_date': '2026-09-08',
         'md5': '02769dcdca897ea1574c2de844c4d76e',
+        'retail_nsane': True,
+        'retail_keywords': ['photodirector'],
+        # 试用通道的 DisplayBuildNumber 是安装框架版本（17.6.x），≠ 产品版本
+        'trial_version_trusted': False,
     },
 }
 
 THANKYOU_API = 'https://www.cyberlink.com/api/download/thank-you-page?ProductId={pid}&ostype=Windows'
 THANKYOU_REFERER = 'https://www.cyberlink.com/prog/trial/download-notice.jsp?ProductId={pid}&ostype=Windows'
+
+# 零售版（Ultimate/Ultra 买断版）版本源：nsane 论坛「Software Updates」板块。
+# 官方匿名通道（thank-you API → 试用下载器）只给试用基线（PowerDirector 长期停在
+# 25.0.0904.0），零售新构建（如 25.0.1019.0）走买断/零售通道，匿名官方接口取不到；
+# 该板块惯例是「一个软件更新开一个新帖」，标题即精确版本号，列表页匿名可读。
+NSANE_SOFTWARE_UPDATES = 'https://nsaneforums.com/forum/48-software-updates/'
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
@@ -112,6 +131,63 @@ def ver_newer(a, b):
     ta, tb = ver_tuple(a), ver_tuple(b)
     n = max(len(ta), len(tb))
     return (ta + (0,) * (n - len(ta))) > (tb + (0,) * (n - len(tb)))
+
+
+def fetch_retail_version(cfg):
+    """零售版（Ultimate/Ultra 买断版）最新版本号。
+
+    官方匿名通道只给「试用基线」（PowerDirector 长期停在 25.0.0904.0），
+    零售新构建走买断通道取不到 → 改从 nsane「Software Updates」板块标题取：
+    板块惯例是「一个软件更新开一个新帖」，标题即精确版本号，列表页匿名可读。
+
+    返回 (version, date)；取不到返回 ('', '')。
+    """
+    keywords = [str(k).strip().lower() for k in (cfg.get('retail_keywords') or [])
+                if str(k).strip()]
+    if not keywords:
+        return '', ''
+
+    headers = {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    try:
+        req = urllib.request.Request(NSANE_SOFTWARE_UPDATES, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode('utf-8', 'ignore')
+    except Exception as e:
+        print(f"  [!] 零售版版本源抓取失败: {e}", file=sys.stderr)
+        return '', ''
+
+    best_ver = ''
+    best_date = ''
+    for m in re.finditer(
+            r"<a href='(https://nsaneforums\.com/topic/[^']+)'[^>]*title='([^']*)'", html):
+        title = html_mod.unescape(m.group(2)).strip()
+        low = title.lower()
+        if not any(k in low for k in keywords):
+            continue
+        vm = re.search(r'(\d+)\.(\d+)\.(\d{4})(?:\.(\d+))?', title)
+        if not vm:
+            continue
+        ver = f'{vm.group(1)}.{vm.group(2)}.{vm.group(3)}.{vm.group(4) or "0"}'
+        if not best_ver or ver_newer(ver, best_ver):
+            best_ver = ver
+            # 该行所属 <li> 块里第一个 <time> 是发帖时间（板块惯例：一个更新一个新帖）
+            blk_start = html.rfind('data-rowID=', 0, m.start())
+            blk_end = html.find('data-rowID=', m.start())
+            blk = html[blk_start:blk_end if blk_end > 0 else m.start() + 4000]
+            tm = re.search(r"<time datetime='([^']+)'", blk)
+            if tm:
+                try:
+                    dt = datetime.strptime(tm.group(1), '%Y-%m-%dT%H:%M:%SZ')
+                    best_date = (dt + timedelta(hours=8)).strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+    if best_ver:
+        print(f"  零售版版本(nsane): {best_ver}" + (f" @ {best_date}" if best_date else ""))
+    return best_ver, best_date
 
 # ============================================================
 # 7z 工具检测
@@ -220,29 +296,50 @@ def fetch_product(product_key, seven_zip, work_dir):
     print(f"{'='*60}")
 
     # 1. 官方 thank-you API 拿下载器直链
-    print("[1/2] 官方 thank-you API → 下载器直链...")
+    print("[1/3] 官方 thank-you API → 下载器直链...")
     downloader_url, _final = get_downloader_url(product_key)
     if not downloader_url:
         print("  [!] 未拿到官方下载器直链")
     else:
         print(f"  {downloader_url[:90]}...")
 
-    # 2. 解下载器 info.ini 的 DisplayBuildNumber（官方当前分发基线）
-    print("[2/2] 解下载器 info.ini 取官方基线版本...")
+    # 2. 解下载器 info.ini 的 DisplayBuildNumber（官方试用通道当前基线）
+    print("[2/3] 解下载器 info.ini 取官方试用通道基线...")
     detected = extract_display_build(downloader_url, seven_zip, work_dir)
     detected = canon_ver(detected) if detected else ''
 
-    # 3. 防降级：探测值不比基线新 → 显示已核实版本；官方换包后自动对齐
-    version = cfg['version_display']
-    if detected and ver_newer(detected, cfg['base_version']):
+    # 3. 零售版（Ultimate/Ultra 买断版）最新版本：官方试用通道长期滞后于零售新构建，
+    #    零售源与官方通道取较新者 → 官方铺开新版本时自动对齐，零售先发时也能跟上。
+    print("[3/3] 零售版版本源（nsane Software Updates 板块）...")
+    retail_ver, retail_date = ('', '')
+    if cfg.get('retail_nsane'):
+        retail_ver, retail_date = fetch_retail_version(cfg)
+
+    version = cfg.get('version_display') or cfg['base_version']
+    # 官方试用通道的 DisplayBuildNumber 对 PhotoDirector 是「安装框架版本」（17.6.x），
+    # ≠ 产品版本（18.x），不能拿它当产品版本号。
+    trial_trusted = cfg.get('trial_version_trusted', True)
+    if detected and trial_trusted and ver_newer(detected, cfg['base_version']):
         version = detected
-        print(f"  ✓ 官方探测到更新版本: {version}（自动对齐）")
-    else:
-        if detected:
-            print(f"  探测值 {detected} 未超过基线 {cfg['base_version']}，展示已核实版本 {version}")
+        print(f"  ✓ 官方试用通道探测到更新版本: {version}（自动对齐）")
+    elif detected:
+        if trial_trusted:
+            print(f"  官方试用通道值 {detected} 未超过基线 {cfg['base_version']}")
+        else:
+            print(f"  官方试用通道值 {detected}（框架版，不作产品版本）")
+    if retail_ver:
+        if not version or ver_newer(retail_ver, version):
+            version = retail_ver
+            print(f"  ✓ 采用零售版版本: {version}")
+        else:
+            print(f"  零售版 {retail_ver} 不比当前 {version} 新，保留当前")
 
     # 4. HEAD 刷新离线包大小/日期
     info = verify_link(cfg['download_url']) or {}
+    build_date = info.get('build_date') or cfg['build_date']
+    # 零售版发布日晚于包时间时（官方换包滞后）用发布日，否则新版本日期会被写回旧包时间
+    if retail_date and retail_date > (build_date or ''):
+        build_date = retail_date
     result = {
         'product': cfg['name'],
         'product_key': product_key,
@@ -253,7 +350,7 @@ def fetch_product(product_key, seven_zip, work_dir):
         'downloader_url': downloader_url,
         'size': info.get('size', cfg['size']),
         'size_mb': info.get('size_mb', cfg['size_mb']),
-        'build_date': info.get('build_date', cfg['build_date']),
+        'build_date': build_date,
         'last_modified': info.get('last_modified', ''),
         'md5': cfg['md5'],
         'fetched_at': datetime.now(timezone.utc).isoformat(),
@@ -262,6 +359,42 @@ def fetch_product(product_key, seven_zip, work_dir):
     print(f"  链接: {result['link']}")
     print(f"  大小: {result['size_mb']} MB / 构建: {result['build_date']}")
     return result
+
+def embed_index_html(output):
+    """把 data.json 的内容同步进 index.html 的 EMBEDDED_DATA 兜底块。
+
+    手写兜底数据会随时间腐化（曾长期停在 25.0.0904.0 + 已失效的旧 token），
+    这里改成每次跑完自动写入，保证兜底显示与 data.json 一致。
+    """
+    index_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'index.html')
+    if not os.path.exists(index_path):
+        return
+    with open(index_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+    m = re.search(r'var EMBEDDED_DATA = \{.*?\n\};', html, re.S)
+    if not m:
+        print("[!] index.html 里没找到 EMBEDDED_DATA 块，跳过嵌入")
+        return
+    # 只保留页面用到的字段，保持块体与原手写格式一致
+    slim = {
+        'updated_at': output.get('updated_at', ''),
+        'products': [{
+            'product': p.get('product', ''),
+            'product_key': p.get('product_key', ''),
+            'version': p.get('version', ''),
+            'link': p.get('link', ''),
+            'token': p.get('token', ''),
+            'size': p.get('size', 0),
+            'build_date': p.get('build_date', ''),
+            'md5': p.get('md5', ''),
+        } for p in output.get('products', [])],
+    }
+    block = 'var EMBEDDED_DATA = ' + json.dumps(slim, ensure_ascii=False, indent=2) + ';'
+    html = html[:m.start()] + block + html[m.end():]
+    with open(index_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f"[*] 已同步 index.html 的 EMBEDDED_DATA")
+
 
 def main():
     seven_zip = get_seven_zip()
@@ -282,6 +415,7 @@ def main():
     }
     with open(DATA_JSON, 'w', encoding='utf-8') as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
+    embed_index_html(output)
     print(f"\n{'='*60}")
     print(f"已更新 {DATA_JSON}")
     print(f"{'='*60}")
