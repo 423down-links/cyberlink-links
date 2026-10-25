@@ -413,6 +413,25 @@ def main():
         'updated_at': datetime.now(timezone.utc).isoformat(),
         'products': results,
     }
+    # 时间戳只在「实质内容变了」时才刷新：否则每轮跑都因时间戳变化触发一次
+    # 无意义提交（CI 每次都推送同样的版本号），徒增仓库历史噪音。
+    prev = {}
+    if os.path.exists(DATA_JSON):
+        try:
+            with open(DATA_JSON, 'r', encoding='utf-8') as f:
+                prev = json.load(f)
+        except Exception:
+            prev = {}
+    if prev:
+        def _core(d):
+            return [{k: v for k, v in p.items() if k not in ('fetched_at',)}
+                    for p in d.get('products', [])]
+        if _core(prev) == _core(output):
+            output['updated_at'] = prev.get('updated_at', output['updated_at'])
+            for i, p in enumerate(output['products']):
+                if i < len(prev.get('products', [])):
+                    p['fetched_at'] = prev['products'][i].get('fetched_at', p.get('fetched_at'))
+            print("[*] 版本/大小/日期均无变化，保留原时间戳")
     with open(DATA_JSON, 'w', encoding='utf-8') as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     embed_index_html(output)
