@@ -24,7 +24,9 @@ CyberLink 官方版本号自动探测脚本（CI 环境用）
   用 trial_version_trusted=False 排除。
 - 2026-10-27 更正：get-link-v2.jsp 仍可用，只是参数必须凑齐（缺一个就 {"error":"000"}）。
   它是下载器运行时真正调用的接口，返回**完整安装器**直链（不是 downloader），
-  故 PhotoDirector 改走 full_installer 通道，版本号取自包文件名，与下载包同源。
+  故 PhotoDirector / PowerDirector 均改走 full_installer 通道，版本号取自包文件名，
+  与下载包同源（此前两款配置里的 download_url 都还指向旧包：PhD 是 0908 的
+  DirectorSuite365.exe、PD 是 0904/0914 的 DirectorSuite365.exe）。
 """
 
 import urllib.request
@@ -47,14 +49,25 @@ PRODUCTS = {
     'powerdirector': {
         'name': 'PowerDirector',
         'product_id': '4',
-        'download_url': 'https://build.cyberlink.com/Retail/PowerDirector/CGQC8ZH75VM6/PowerDirector_DirectorSuite365.exe',
-        'token': 'CGQC8ZH75VM6',
-        'base_version': '25.0.0904.0',
-        'size': 724699336,
-        'size_mb': 691.1,
-        'build_date': '2026-09-14',
-        'md5': 'be7750903c07baa523c0ab0328a1b27a',
-        # 零售版版本源（见 fetch_retail_version 说明）
+        # 完整离线包通道（2026-10-27）：与 PhotoDirector 同理，走下载器运行时真正
+        # 调用的官方 get-link-v2.jsp，直接返回完整安装器直链 + md5，文件名带真实构建号。
+        # 旧的 DirectorSuite365.exe 是 0904 的包（2026-09-14 修改），
+        # 与页面显示的 25.0.1019.0 不同源 —— 正是「下载到旧版」的原因。
+        'full_installer': True,
+        'full_name': 'PowerDirector',
+        'full_version': '25.0',
+        # SR 取自下载器 info.ini 的 SR_No（VDE 前缀 = PowerDirector）；
+        # 接口用 SR 识别产品线，返回的始终是最新构建（实测 VDE260910-01 → 1019 包）。
+        'full_sr': ['VDE260910-01'],
+        'full_lang': 'Enu',
+        'download_url': 'https://build.cyberlink.com/Retail/PowerDirector/I8KJVKIFAO5/PowerDirector_1019_25.0.10_365_Essential_VDE261019-01.exe',
+        'token': 'I8KJVKIFAO5',
+        'base_version': '25.0.1019.0',
+        'size': 722417392,
+        'size_mb': 688.9,
+        'build_date': '2026-10-20',
+        'md5': 'a05038b60fd85f591ba82c5a88c4aa16',
+        # 零售版版本源（见 fetch_retail_version 说明）；完整包通道命中时会自动跳过
         'retail_nsane': True,
         'retail_keywords': ['powerdirector'],
     },
@@ -151,17 +164,24 @@ GETLINK_HOSTS = ['https://downloader.cyberlink.com', 'https://www.cyberlink.com'
 
 
 def full_ver_from_name(fname):
-    """从完整包文件名解产品版本。
-    PhotoDirector_18.0.10.1011.2120_xxx.exe：第 3 段是套件位（恒 10），
-    第 4 段才是构建号 → 对外口径 major.minor.build.0。
+    """从完整包文件名解产品版本（官方两种命名都支持）：
+
+    - PhotoDirector_18.0.10.1011.2120_bdded9f25_92_Essential_PTD260827-01.exe
+      连续 5 段数字：第 3 段是套件位（恒 10），第 4 段才是构建号 → 18.0.1011.0；
+    - PowerDirector_1019_25.0.10_365_Essential_VDE261019-01.exe
+      构建号在前、后接 major.minor.suite → 25.0.1019.0。
     """
     m = re.search(r'(\d+)\.(\d+)\.(\d+)\.(\d+)\.(\d+)', fname)
-    if not m:
-        return ''
-    p = [int(x) for x in m.groups()]
-    if p[2] < 100 <= p[3]:
-        return f'{p[0]}.{p[1]}.{p[3]}.0'
-    return canon_ver('.'.join(m.groups()))
+    if m:
+        p = [int(x) for x in m.groups()]
+        if p[2] < 100 <= p[3]:
+            return f'{p[0]}.{p[1]}.{p[3]}.0'
+        return canon_ver('.'.join(m.groups()))
+    # 构建号在前：产品_1019_25.0.10_365_...
+    m2 = re.search(r'_(\d{3,5})_(\d+)\.(\d+)\.(\d+)[_\.]', fname)
+    if m2:
+        return f'{m2.group(2)}.{m2.group(3)}.{int(m2.group(1))}.0'
+    return ''
 
 
 def fetch_full_installer(cfg):
