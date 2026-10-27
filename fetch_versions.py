@@ -6,27 +6,21 @@ CyberLink 官方版本号自动探测脚本（CI 环境用）
 功能：
 1. 调用官方 thank-you API 获取当前试用通道下载器直链
 2. 解出下载器内 info.ini 的 DisplayBuildNumber（= 官方试用通道基线版本）
-3. 再从 nsane「Software Updates」板块标题取零售版（Ultimate/Ultra 买断版）最新版本，
-   与官方试用通道取较新者
+3. 走官方完整离线包接口 get-link-v2.jsp 拿完整安装器直链，版本号取自包文件名
 4. 更新 data.json
 
-说明（2026-10-25 排查结论）：
-- 试用下载器 info.ini 的 DisplayBuildNumber 即「官方试用通道当前基线」：
-  PowerDirector=25.0.0904.0（VDE260910-01）、PhotoDirector=17.6.1826.0（框架版本）。
-- 官方匿名通道只铺「试用」基线，零售新构建（PowerDirector 25.0.1019.0 等）走买断/
-  零售通道，匿名官方接口取不到（补丁中心只到 2025 线、零售兑换需密钥、ProductId=270
-  的 Ultimate Suite 通道 S3 对象 403）。
-- 旧方案用 version_display 写死人工核实的零售版号，等于把版本钉死在常量上，
-  官方再发新版也不会动 → 这正是「版本长期停在旧版」的根因。
-- 现改为：零售版版本号由 nsane 板块标题自动解析，与官方试用通道**双向取较新者**。
-  官方试用通道铺开新版本后自动对齐；零售先发时也能跟上，不再需要人工改配置。
+说明（2026-10-27 排查结论）：
+- 版本号与下载包同源由完整安装器保证：get-link-v2.jsp 是下载器运行时真正调用的
+  官方接口，匿名可用，返回**完整安装器**直链（不是 downloader）+ md5，文件名带真实
+  构建号 → 版本号取自包名，杜绝「显示 1019、下载到 0904 旧包」的错配。
+- 参数必须凑齐，缺一个就 {"error":"000"}；SR 前缀决定产品（VDE=PD、PTD=PhD）。
+- 官方匿名通道只铺「试用」基线（PowerDirector 长期停在 25.0.0904.0，
+  PhotoDirector 甚至给的是安装框架版本 17.6.x），故试用值只作参考，不作产品版本。
+- **不再从 nsane 等论坛下载站取版本**：论坛只是转载发布，标题里的版本是订阅 updater
+  先推的构建，匿名拿不到对应完整包 → 会出现「版本号比包新」的错配。根因必须靠官方
+  下载器 / 接口令牌解决。
 - PhotoDirector 的试用值是安装框架版本（17.6.x），≠ 产品版本（18.x），
   用 trial_version_trusted=False 排除。
-- 2026-10-27 更正：get-link-v2.jsp 仍可用，只是参数必须凑齐（缺一个就 {"error":"000"}）。
-  它是下载器运行时真正调用的接口，返回**完整安装器**直链（不是 downloader），
-  故 PhotoDirector / PowerDirector 均改走 full_installer 通道，版本号取自包文件名，
-  与下载包同源（此前两款配置里的 download_url 都还指向旧包：PhD 是 0908 的
-  DirectorSuite365.exe、PD 是 0904/0914 的 DirectorSuite365.exe）。
 """
 
 import urllib.request
@@ -35,11 +29,10 @@ import re
 import json
 import os
 import sys
-import html as html_mod
 import subprocess
 import tempfile
 import shutil
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 # ============================================================
 # 配置
@@ -67,9 +60,6 @@ PRODUCTS = {
         'size_mb': 688.9,
         'build_date': '2026-10-20',
         'md5': 'a05038b60fd85f591ba82c5a88c4aa16',
-        # 零售版版本源（见 fetch_retail_version 说明）；完整包通道命中时会自动跳过
-        'retail_nsane': True,
-        'retail_keywords': ['powerdirector'],
     },
     'photodirector': {
         'name': 'PhotoDirector',
@@ -90,8 +80,6 @@ PRODUCTS = {
         'size_mb': 665.6,
         'build_date': '2026-10-12',
         'md5': '3e73107715cc97d0b3281c451431ca25',
-        'retail_nsane': True,
-        'retail_keywords': ['photodirector'],
         # 试用通道的 DisplayBuildNumber 是安装框架版本（17.6.x），≠ 产品版本
         'trial_version_trusted': False,
     },
@@ -99,12 +87,6 @@ PRODUCTS = {
 
 THANKYOU_API = 'https://www.cyberlink.com/api/download/thank-you-page?ProductId={pid}&ostype=Windows'
 THANKYOU_REFERER = 'https://www.cyberlink.com/prog/trial/download-notice.jsp?ProductId={pid}&ostype=Windows'
-
-# 零售版（Ultimate/Ultra 买断版）版本源：nsane 论坛「Software Updates」板块。
-# 官方匿名通道（thank-you API → 试用下载器）只给试用基线（PowerDirector 长期停在
-# 25.0.0904.0），零售新构建（如 25.0.1019.0）走买断/零售通道，匿名官方接口取不到；
-# 该板块惯例是「一个软件更新开一个新帖」，标题即精确版本号，列表页匿名可读。
-NSANE_SOFTWARE_UPDATES = 'https://nsaneforums.com/forum/48-software-updates/'
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
@@ -220,82 +202,6 @@ def fetch_full_installer(cfg):
             return out
     return None
 
-
-def fetch_retail_version(cfg):
-    """零售版（Ultimate/Ultra 买断版）最新版本号。
-
-    官方匿名通道只给「试用基线」（PowerDirector 长期停在 25.0.0904.0），
-    零售新构建走买断通道取不到 → 改从 nsane「Software Updates」板块标题取：
-    板块惯例是「一个软件更新开一个新帖」，标题即精确版本号，列表页匿名可读。
-
-    返回 (version, date)；取不到返回 ('', '')。
-    """
-    keywords = [str(k).strip().lower() for k in (cfg.get('retail_keywords') or [])
-                if str(k).strip()]
-    if not keywords:
-        return '', ''
-
-    headers = {
-        'User-Agent': UA,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-
-    best_ver = ''
-    best_date = ''
-    # 板块每页只有 25 帖，目标帖很容易被挤到后面几页（实测 PowerDirector 在
-    # 第 1 页就找不到），故翻 4 页；命中即停，避免多打请求。
-    for page in range(1, 5):
-        url = (NSANE_SOFTWARE_UPDATES if page == 1
-               else f'{NSANE_SOFTWARE_UPDATES}?page={page}')
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                html = resp.read().decode('utf-8', 'ignore')
-        except Exception as e:
-            print(f"  [!] 零售版版本源抓取失败(第{page}页): {e}", file=sys.stderr)
-            continue
-
-        found_on_page = False
-        for m in re.finditer(
-                r"<a href='(https://nsaneforums\.com/topic/[^']+)'[^>]*title='([^']*)'", html):
-            link = m.group(1)
-            title = html_mod.unescape(m.group(2)).strip()
-            # 匹配用 URL slug（cyberlink-powerdirector-ultimate-2027-v2501019）而不只靠
-            # title 属性：部分行的 title 被截断/带尾空格，slug 反而稳定。
-            hay = (link + ' ' + title).lower()
-            if not any(k in hay for k in keywords):
-                continue
-            ver = ''
-            vm = re.search(r'(\d+)\.(\d+)\.(\d{4})(?:\.(\d+))?', hay)
-            if vm:
-                ver = f'{vm.group(1)}.{vm.group(2)}.{vm.group(3)}.{vm.group(4) or "0"}'
-            else:
-                sm = re.search(r'-v(\d{2})(\d{2})(\d{2})(\d{2})(?:-|$)', link.lower())
-                if sm:
-                    ver = f'{sm.group(1)}.{sm.group(2)}.{sm.group(3)}{sm.group(4)}.0'
-            if not ver:
-                continue
-            found_on_page = True
-            if not best_ver or ver_newer(ver, best_ver):
-                best_ver = ver
-                # 该行所属 <li> 块里第一个 <time> 是发帖时间（板块惯例：一个更新一个新帖）
-                blk_start = html.rfind('data-rowID=', 0, m.start())
-                blk_end = html.find('data-rowID=', m.start())
-                blk = html[blk_start:blk_end if blk_end > 0 else m.start() + 4000]
-                tm = re.search(r"<time datetime='([^']+)'", blk)
-                if tm:
-                    try:
-                        dt = datetime.strptime(tm.group(1), '%Y-%m-%dT%H:%M:%SZ')
-                        best_date = (dt + timedelta(hours=8)).strftime('%Y-%m-%d')
-                    except Exception:
-                        pass
-        if found_on_page:
-            break
-
-    if best_ver:
-        print(f"  零售版版本(nsane): {best_ver}" + (f" @ {best_date}" if best_date else ""))
-    return best_ver, best_date
 
 # ============================================================
 # 7z 工具检测
@@ -416,18 +322,10 @@ def fetch_product(product_key, seven_zip, work_dir):
     detected = extract_display_build(downloader_url, seven_zip, work_dir)
     detected = canon_ver(detected) if detected else ''
 
-    # 3. 完整离线包通道（PhotoDirector）：官方接口直接给完整安装器直链，
-    #    版本号取自包文件名 → 版本与下载包同源，不再用旧的 0908 DirectorSuite 包。
+    # 3. 完整离线包通道：官方接口直接给完整安装器直链，
+    #    版本号取自包文件名 → 版本与下载包同源，不再用旧的 DirectorSuite 包。
     print("[2.5/3] 官方完整离线包接口（get-link-v2.jsp）...")
     full = fetch_full_installer(cfg) if cfg.get('full_installer') else None
-
-    # 4. 零售版（Ultimate/Ultra 买断版）最新版本：官方试用通道长期滞后于零售新构建，
-    #    零售源与官方通道取较新者 → 官方铺开新版本时自动对齐，零售先发时也能跟上。
-    #    完整包通道命中时跳过（那是订阅 updater 的版本，匿名拿不到对应离线包）。
-    print("[3/3] 零售版版本源（nsane Software Updates 板块）...")
-    retail_ver, retail_date = ('', '')
-    if cfg.get('retail_nsane') and not full:
-        retail_ver, retail_date = fetch_retail_version(cfg)
 
     version = cfg.get('version_display') or cfg['base_version']
     # 官方试用通道的 DisplayBuildNumber 对 PhotoDirector 是「安装框架版本」（17.6.x），
@@ -441,12 +339,6 @@ def fetch_product(product_key, seven_zip, work_dir):
             print(f"  官方试用通道值 {detected} 未超过基线 {cfg['base_version']}")
         else:
             print(f"  官方试用通道值 {detected}（框架版，不作产品版本）")
-    if retail_ver:
-        if not version or ver_newer(retail_ver, version):
-            version = retail_ver
-            print(f"  ✓ 采用零售版版本: {version}")
-        else:
-            print(f"  零售版 {retail_ver} 不比当前 {version} 新，保留当前")
     if full and full.get('ver'):
         version = full['ver']
         print(f"  ✓ 采用完整包版本: {version}（与下载包同源）")
@@ -459,9 +351,6 @@ def fetch_product(product_key, seven_zip, work_dir):
     if full:
         # 版本就来自这个包，日期直接取包时间（不与旧配置值比大小）
         build_date = info.get('build_date') or build_date
-    elif retail_date and retail_date > (build_date or ''):
-        # 零售版发布日晚于包时间时（官方换包滞后）用发布日，否则新版本日期会被写回旧包时间
-        build_date = retail_date
     result = {
         'product': cfg['name'],
         'product_key': product_key,
