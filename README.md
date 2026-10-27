@@ -4,7 +4,7 @@
 
 ## 在线访问
 
-**GitHub Pages**: https://423down.github.io/cyberlink-links/
+**Cloudflare Pages**: https://cyberlink-links.pages.dev/ （自定义域名：https://cyber.423down.cn/）
 
 ## 功能
 
@@ -104,4 +104,4 @@ DisplayBuildNumber = 官方试用通道当前基线版本
 - 完整包直链里的 token 由官方实时下发，失效后重跑脚本即可获取新 token
 - `downloader.cyberlink.com` 在部分网络被 DNS 污染，脚本自动回退 `www.cyberlink.com` 同路径
 - nsane 板块列表页需带完整浏览器头（`Accept` / `Accept-Language`），否则 403/406
-- GitHub Pages 首次部署需在仓库 Settings → Pages 中开启
+- 站点部署：Cloudflare Pages 直连仓库自动构建；`_redirects` 把 pages.dev 301 到 `cyber.423down.cn`
