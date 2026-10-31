@@ -32,7 +32,8 @@ import sys
 import subprocess
 import tempfile
 import shutil
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone, timedelta
 
 # ============================================================
 # 配置
@@ -49,9 +50,11 @@ PRODUCTS = {
         'full_installer': True,
         'full_name': 'PowerDirector',
         'full_version': '25.0',
-        # SR 取自下载器 info.ini 的 SR_No（VDE 前缀 = PowerDirector）；
-        # 接口用 SR 识别产品线，返回的始终是最新构建（实测 VDE260910-01 → 1019 包）。
+        # SR 前缀决定产品线（VDE=PowerDirector、PTD=PhotoDirector），
+        # 每个构建都会换一个新 SR（VDE261019-01 → VDE261027-01），
+        # 所以这里只留一个已知兜底，真正取最新靠 sr_candidates() 自动枚举最近 60 天。
         'full_sr': ['VDE260910-01'],
+        'sr_prefix': 'VDE',
         'full_lang': 'Enu',
         'download_url': 'https://build.cyberlink.com/Retail/PowerDirector/I8KJVKIFAO5/PowerDirector_1019_25.0.10_365_Essential_VDE261019-01.exe',
         'token': 'I8KJVKIFAO5',
@@ -70,8 +73,10 @@ PRODUCTS = {
         'full_installer': True,
         'full_name': 'PhotoDirector',
         'full_version': '17.0',
-        # SR 前缀决定产品（PTD=PhotoDirector），两个都是下载器 info.ini 的真实 SR
+        # SR 前缀决定产品（PTD=PhotoDirector），每个构建换一个新 SR，
+        # 旧 SR 只能拿到旧包 —— 自动枚举最近 60 天（见 sr_candidates）。
         'full_sr': ['PTD260827-01', 'PTD260514-01'],
+        'sr_prefix': 'PTD',
         'full_lang': 'Enu',
         'download_url': 'https://build.cyberlink.com/Retail/PhotoDirector/5F73OXUQ5M4N8J/PhotoDirector_18.0.10.1011.2120_bdded9f25_92_Essential_PTD260827-01.exe',
         'token': '5F73OXUQ5M4N8J',
@@ -166,40 +171,98 @@ def full_ver_from_name(fname):
     return ''
 
 
+def date_from_ver(ver):
+    """从完整包版本里的构建号推发布日期：25.0.1027.0 → 2026-10-27。
+
+    CyberLink 产品版本第 3 段就是 MMDD 构建号（25.0.1027.0 / 18.0.1027.0 都是
+    10-27 的构建）。包 CDN 的 Last-Modified 常比构建日晚一天，且 HEAD 可能 403，
+    不能当发布日；SR 里的日期也可能滞后（VDE260916-01 对应 1027 构建）。
+    """
+    m = re.match(r'[\d.]+\.(\d{2})(\d{2})\.', str(ver))
+    if not m:
+        return ''
+    mo, dd = int(m.group(1)), int(m.group(2))
+    if not (1 <= mo <= 12 and 1 <= dd <= 31):
+        return ''
+    try:
+        today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+        d = datetime(today.year, mo, dd).date()
+        if d > today:
+            d = datetime(today.year - 1, mo, dd).date()
+        return d.isoformat()
+    except ValueError:
+        return ''
+
+
+def sr_candidates(cfg):
+    """SR 候选列表：配置里的已知 SR（兜底）+ 最近 N 天自动枚举。
+
+    SR（如 PTD261027-01 / VDE261019-01）按**构建日**分配，每个构建换一个新的；
+    硬编码旧 SR 就只能拿到那天的旧包 —— 这就是线上长期停更的根因。
+    从今天往前枚举 ``{prefix}{YYMMDD}-01``，并发探测后取接口返回的最大版本。
+    """
+    srs = cfg.get('full_sr') or []
+    if isinstance(srs, str):
+        srs = [srs]
+    srs = [x for x in srs if x]
+    prefix = cfg.get('sr_prefix') or (srs[0][:3] if srs else '')
+    if not prefix:
+        return srs
+    days = int(cfg.get('sr_lookback', 60))
+    now = datetime.now(timezone.utc) + timedelta(hours=8)
+    gen = [f"{prefix}{(now - timedelta(days=i)).strftime('%y%m%d')}-01"
+           for i in range(days + 1)]
+    return srs + gen
+
+
 def fetch_full_installer(cfg):
-    """调官方 get-link-v2.jsp 拿完整离线安装包直链。
-    返回 {'url','md5','ver'}；失败返回 None。
+    """调官方 get-link-v2.jsp 拿完整离线安装包直链（并发枚举 SR，取最新版本）。
+
+    返回 {'url','md5','ver'}；全部 SR 均失败返回 None。
+    只打一个主机：实测 downloader.cyberlink.com 与 www.cyberlink.com 结果一致，
+    双主机 × 61 个 SR 会把请求数翻倍、还容易被限流。
     """
     name = cfg.get('full_name') or cfg['name']
     ver = str(cfg.get('full_version') or '')
     lang = cfg.get('full_lang') or 'Enu'
-    srs = cfg.get('full_sr') or []
-    if isinstance(srs, str):
-        srs = [srs]
-    for sr in srs:
+    host = cfg.get('getlink_host') or GETLINK_HOSTS[0]
+    want = name.lower()
+
+    def probe(sr):
         qs = ('?PRODUCTNAME={n}&PRODUCTVERSION={v}&VERSIONTYPE=trial&SR={sr}'
               '&VID=4.2.1.14316&LANGUAGE={l}&ostype=Windows').format(
                   n=urllib.parse.quote(name), v=urllib.parse.quote(ver),
                   sr=urllib.parse.quote(sr), l=urllib.parse.quote(lang))
-        for host in GETLINK_HOSTS:
-            try:
-                data, _h, _f = http_get(host + '/prog/util/downloader/get-link-v2.jsp' + qs,
-                                        timeout=25, referer='https://www.cyberlink.com/')
-                obj = json.loads(data.decode('utf-8', 'ignore'))
-            except Exception as e:
-                print(f"  [!] 完整包接口不可用({host}): {e}", file=sys.stderr)
-                continue
-            link = str(obj.get('link') or '').strip()
-            if not link:
-                print(f"  [!] 完整包接口无直链(SR={sr}): {obj.get('error', obj)}", file=sys.stderr)
-                continue
-            fname = urllib.parse.unquote(link.rsplit('/', 1)[-1])
-            if name.lower() not in fname.lower():
-                print(f"  [!] 接口返回别的产品: {fname[:70]}", file=sys.stderr)
-                continue
-            out = {'url': link, 'md5': str(obj.get('md5') or ''), 'ver': full_ver_from_name(fname)}
-            print(f"  完整离线包: {fname}")
-            return out
+        try:
+            data, _h, _f = http_get(host + '/prog/util/downloader/get-link-v2.jsp' + qs,
+                                    timeout=12, referer='https://www.cyberlink.com/')
+            obj = json.loads(data.decode('utf-8', 'ignore'))
+        except Exception:
+            return None
+        link = str(obj.get('link') or '').strip()
+        if not link:
+            return None
+        fname = urllib.parse.unquote(link.rsplit('/', 1)[-1])
+        if want not in fname.lower():
+            return None
+        v = full_ver_from_name(fname)
+        if not v:
+            return None
+        return {'url': link, 'md5': str(obj.get('md5') or ''), 'ver': v, 'fname': fname}
+
+    best = None
+    cands = sr_candidates(cfg)
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for r in ex.map(probe, cands):
+                if r and (best is None or ver_tuple(r['ver']) > ver_tuple(best['ver'])):
+                    best = r
+    except Exception as e:
+        print(f"  [!] 完整包接口异常: {e}", file=sys.stderr)
+    if best:
+        print(f"  完整离线包: {best['fname']}")
+        return best
+    print(f"  [!] 完整包接口未返回直链（枚举 {len(cands)} 个 SR 均无效）", file=sys.stderr)
     return None
 
 
@@ -349,8 +412,9 @@ def fetch_product(product_key, seven_zip, work_dir):
     info = verify_link(link) or {}
     build_date = info.get('build_date') or cfg['build_date']
     if full:
-        # 版本就来自这个包，日期直接取包时间（不与旧配置值比大小）
-        build_date = info.get('build_date') or build_date
+        # 版本就来自这个包：发布日以包名里的 MMDD 构建号为准（25.0.1027.0 → 10-27），
+        # CDN 的 Last-Modified 常晚一天，只作兜底。
+        build_date = date_from_ver(version) or build_date
     result = {
         'product': cfg['name'],
         'product_key': product_key,
