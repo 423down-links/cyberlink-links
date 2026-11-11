@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-10T22:58:02.061936+00:00",
+  "updated_at": "2026-11-11T13:46:56.698486+00:00",
   "products": [
     {
       "product": "PowerDirector",
@@ -14,7 +14,7 @@
       "build_date": "2026-11-04",
       "last_modified": "Thu, 05 Nov 2026 02:03:17 GMT",
       "md5": "c37e477951aae836f41c429140475111",
-      "fetched_at": "2026-11-10T22:58:00.503934+00:00"
+      "fetched_at": "2026-11-11T13:46:55.812240+00:00"
     },
     {
       "product": "PhotoDirector",
@@ -23,13 +23,13 @@
       "product_name": "PhotoDirector",
       "link": "https://build.cyberlink.com/Retail/PhotoDirector/IPK6YMHXE4JLCAZ2/PhotoDirector_18.0.10.1109.1205_60b41909_9_Essential_PTD261109-01.exe",
       "token": "5F73OXUQ5M4N8J",
-      "downloader_url": "https://build.cyberlink.com/Retail/PhotoDirector/W218RA8DVDWPF/CyberLink_PhotoDirector_Downloader.exe",
+      "downloader_url": "https://build.cyberlink.com/Retail/PhotoDirector/IPK6YMHXE4JLCAZ2/CyberLink_PhotoDirector_Downloader.exe",
       "size": 698863736,
       "size_mb": 666.5,
       "build_date": "2026-11-09",
       "last_modified": "Mon, 09 Nov 2026 09:28:31 GMT",
       "md5": "80437a97963a7179aab2e6089d63655a",
-      "fetched_at": "2026-11-10T22:58:02.060981+00:00"
+      "fetched_at": "2026-11-11T13:46:56.697680+00:00"
     }
   ]
 }
