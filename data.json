@@ -1,20 +1,20 @@
 {
-  "updated_at": "2026-11-25T11:09:30.654217+00:00",
+  "updated_at": "2026-11-25T21:18:48.860752+00:00",
   "products": [
     {
       "product": "PowerDirector",
       "product_key": "powerdirector",
-      "version": "25.0.1104.0",
+      "version": "25.0.1124.0",
       "product_name": "PowerDirector",
-      "link": "https://build.cyberlink.com/Retail/PowerDirector/WU18ZHKQ2W22/PowerDirector_1104_25.0.10.5_365_Essential_VDE261103-06.exe",
+      "link": "https://build.cyberlink.com/Retail/PowerDirector/8UTL45TAX61BA/PowerDirector_1124_25.0.11_365_Essential_VDE261005-01.exe",
       "token": "I8KJVKIFAO5",
       "downloader_url": "https://build.cyberlink.com/Retail/PowerDirector/WU18ZHKQ2W22/CyberLink_PowerDirector_Downloader.exe",
-      "size": 724475832,
-      "size_mb": 690.9,
-      "build_date": "2026-11-04",
-      "last_modified": "Thu, 05 Nov 2026 02:03:17 GMT",
-      "md5": "c37e477951aae836f41c429140475111",
-      "fetched_at": "2026-11-25T11:09:29.576075+00:00"
+      "size": 736226768,
+      "size_mb": 702.1,
+      "build_date": "2026-11-24",
+      "last_modified": "Wed, 25 Nov 2026 08:25:30 GMT",
+      "md5": "91eabe227e42905b3e3b200c967c32f9",
+      "fetched_at": "2026-11-25T21:18:47.471058+00:00"
     },
     {
       "product": "PhotoDirector",
@@ -23,13 +23,13 @@
       "product_name": "PhotoDirector",
       "link": "https://build.cyberlink.com/Retail/PhotoDirector/EKHUVNERELN4/PhotoDirector_18.0.11.1123.1601_e8f01d9aa_23_Essential_PTD261012-01.exe",
       "token": "5F73OXUQ5M4N8J",
-      "downloader_url": "https://build.cyberlink.com/Retail/PhotoDirector/EKHUVNERELN4/CyberLink_PhotoDirector_Downloader.exe",
+      "downloader_url": "https://build.cyberlink.com/Retail/PhotoDirector/IPK6YMHXE4JLCAZ2/CyberLink_PhotoDirector_Downloader.exe",
       "size": 704136128,
       "size_mb": 671.5,
       "build_date": "2026-11-23",
       "last_modified": "Mon, 23 Nov 2026 10:19:14 GMT",
       "md5": "c93a19043a344d73ea099331a7b26aad",
-      "fetched_at": "2026-11-25T11:09:30.653438+00:00"
+      "fetched_at": "2026-11-25T21:18:48.859974+00:00"
     }
   ]
 }
