@@ -1,20 +1,20 @@
 {
-  "updated_at": "2026-11-25T21:18:48.860752+00:00",
+  "updated_at": "2026-11-27T17:55:34.703717+00:00",
   "products": [
     {
       "product": "PowerDirector",
       "product_key": "powerdirector",
-      "version": "25.0.1124.0",
+      "version": "25.0.1126.0",
       "product_name": "PowerDirector",
-      "link": "https://build.cyberlink.com/Retail/PowerDirector/8UTL45TAX61BA/PowerDirector_1124_25.0.11_365_Essential_VDE261005-01.exe",
+      "link": "https://build.cyberlink.com/Retail/PowerDirector/Q76COJ1J90S/PowerDirector_1126_25.0.11_365_Essential_VDE261126-01.exe",
       "token": "I8KJVKIFAO5",
       "downloader_url": "https://build.cyberlink.com/Retail/PowerDirector/WU18ZHKQ2W22/CyberLink_PowerDirector_Downloader.exe",
-      "size": 736226768,
+      "size": 736227344,
       "size_mb": 702.1,
-      "build_date": "2026-11-24",
-      "last_modified": "Wed, 25 Nov 2026 08:25:30 GMT",
-      "md5": "91eabe227e42905b3e3b200c967c32f9",
-      "fetched_at": "2026-11-25T21:18:47.471058+00:00"
+      "build_date": "2026-11-26",
+      "last_modified": "Fri, 27 Nov 2026 06:43:09 GMT",
+      "md5": "e82a8c57b86695aafbca03fd75a04f5a",
+      "fetched_at": "2026-11-27T17:55:33.668980+00:00"
     },
     {
       "product": "PhotoDirector",
@@ -29,7 +29,7 @@
       "build_date": "2026-11-23",
       "last_modified": "Mon, 23 Nov 2026 10:19:14 GMT",
       "md5": "c93a19043a344d73ea099331a7b26aad",
-      "fetched_at": "2026-11-25T21:18:48.859974+00:00"
+      "fetched_at": "2026-11-27T17:55:34.703219+00:00"
     }
   ]
 }
